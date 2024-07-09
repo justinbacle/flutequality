@@ -11,10 +11,13 @@
 
 <body>
 
-    <div id="fftchart" style="width: 600px;height:400px;"></div>
-    <div id="thdbar""></div>
-    <h3 id="Freq"># Hz</h2>
+    <button onclick="run()">Run</button>
+
+    <div id="fftChart" style="width: 600px;height:400px;"></div>
+    <h3 id="Freq"># Hz</h3>
     <h2 id="Note">X0</h2>
+    <div id="harmonicsChart" style="width: 600px;height:400px;"></div>
+    <div id="thdbar"></div>
 
 
     <script>
@@ -47,14 +50,14 @@
             // 12 equal temperament system :
             // f = 2^(h/12) x tuningf
             // where h is the number of semitones (half steps) above or below tuning reference (e.g. A4: 440Hz)
-            
+
             var pitchDict = {}
             var notesArray = ["A", "Bb", "B", "C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#"]
-            var a0tuning = Math.pow(2, (-12 * 4)/12) * a4tuning;
-            for (var octave=0; octave < 6; octave++){
-                for (var note = 0; note < 12; note++){
+            var a0tuning = Math.pow(2, (-12 * 4) / 12) * a4tuning;
+            for (var octave = 0; octave < 6; octave++) {
+                for (var note = 0; note < 12; note++) {
                     var _note = notesArray[note].concat(octave.toString());
-                    var _freq = Math.pow(2, (12 * octave + note)/12) * a0tuning;
+                    var _freq = Math.pow(2, (12 * octave + note) / 12) * a0tuning;
                     pitchDict[_note] = _freq;
                 }
             }
@@ -65,7 +68,7 @@
             var _freqDiff = 9999;
             var _notename = ""
             for (const [key, value] of Object.entries(getNotesDict(tuning))) {
-                if (Math.abs(freq - value) < _freqDiff){
+                if (Math.abs(freq - value) < _freqDiff) {
                     _freqDiff = Math.abs(freq - value);
                     _notename = key
                 }
@@ -75,104 +78,125 @@
     </script>
 
     <script>
-        const tuningFreq = 440;
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        audioCtx.resume();
-        let source;
-        const constraints = { audio: true };
+        function run() {
+            const tuningFreq = 440;
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            audioCtx.resume();
+            let source;
+            const constraints = { audio: true };
 
-        var notesDict = getNotesDict(tuningFreq);
+            var notesDict = getNotesDict(tuningFreq);
 
-        var fftChart = echarts.init(document.getElementById('fftchart'));
-        var fftChartOptions = {
-            title: {
-                text: "FFT"
-            },
-            xAxis: {
-                type: 'log',
-                min: 20,
-                max: 20000
-            },
-            yAxis: {
-                type: 'value'
-            },
-            series: [
-                {
-                    data: [],
-                    type: 'line',
-                    showSymbol: false,
-                }
-            ],
-            animation: false
+            var fftChart = echarts.init(document.getElementById('fftChart'));
+            var fftChartOptions = {
+                title: {
+                    text: "FFT"
+                },
+                xAxis: {
+                    type: 'log',
+                    min: 20,
+                    max: 20000
+                },
+                yAxis: {
+                    type: 'value'
+                },
+                series: [
+                    {
+                        data: [],
+                        type: 'line',
+                        showSymbol: false,
+                    }
+                ],
+                animation: false
+            }
+            fftChart.setOption(fftChartOptions);
+
+            var harmonicsChart = echarts.init(document.getElementById('harmonicsChart'));
+            var harmonicsChartOptions = {
+                title: {text: 'Harmonics'},
+                xAxis: {
+                    type: 'category',
+                    data: ['f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'non-harmonics']
+                },
+                yAxis: {type: 'log', min: 1, max: 1000},
+                series: [{data: [], type: 'bar'}],
+                animation: false
+            }
+            harmonicsChart.setOption(harmonicsChartOptions)
+
+            navigator.mediaDevices
+                .getUserMedia(constraints)
+                .then((stream) => {
+                    source = audioCtx.createMediaStreamSource(stream);
+
+                    const analyser = audioCtx.createAnalyser();
+                    analyser.fftSize = 8192 / 2;
+
+                    const bufferLength = analyser.frequencyBinCount;
+                    var dataArray = new Float32Array(bufferLength);
+                    var freqAmpArray = new Float32Array(bufferLength);
+
+                    var pitchDict = getNotesDict(tuningFreq);
+
+                    source.connect(analyser);
+
+                    var freqValues = new Float32Array(bufferLength);
+                    for (let i = 0; i < bufferLength; i++) {
+                        freqValues[i] = audioCtx.sampleRate / bufferLength * i;
+                    }
+
+                    setInterval(() => {
+                        analyser.getFloatTimeDomainData(dataArray);
+                        analyser.getFloatFrequencyData(freqAmpArray);
+
+                        freqAmpArray = freqAmpArray.map((x) => x + 96);  // 96 for bit depth 16
+
+                        var if0 = indexOfMax(freqAmpArray);
+                        var f0 = freqValues[if0];
+
+                        // find closest note
+                        var closestNote = findClosestNote(f0, tuningFreq);
+                        $("#Note").text(closestNote);
+                        $("#Freq").text(Math.round(f0).toString() + " Hz");
+
+                        var _plotArray = [];
+                        for (let i = 0; i < freqAmpArray.length; i++) {
+                            _plotArray.push([freqValues[i], freqAmpArray[i]])
+                        }
+                        fftChartOptions.series[0].data = _plotArray;
+                        fftChart.setOption(fftChartOptions);
+
+                        // calculate THD
+                        // fN power
+                        const nHarmonics = 8;
+                        const fftIndexLookup = 4;
+                        var harmonicsPowerArray = []
+                        for (let n = 1; n <= nHarmonics + 1; n++){
+                            var harmPow = 0;
+                            for (let i = -fftIndexLookup; i <= fftIndexLookup; i++) {
+                                harmPow = Math.pow(10, freqAmpArray[if0 * n + i] / 20) + harmPow;
+                            }
+                            harmonicsPowerArray.push(harmPow);
+                        }
+                        harmonicsChartOptions.series[0].data = harmonicsPowerArray;
+                        harmonicsChart.setOption(harmonicsChartOptions);
+
+                        // var thdbarvalue = harmPow / (f0Pow + harmPow) * 100;
+                        // $("#thdbar").progressbar("value", thdbarvalue);
+                        // console.log(thdbarvalue);
+
+                        // console.log(freqArray);
+                        // console.log(fftValues);
+                        // console.log(freqAmpArray);
+                    }, 100)
+
+
+                })
+                .catch(function (err) {
+                    console.error("The following gUM error occured: " + err);
+                    audioCtx.close();
+                }, 500);
         }
-        fftChart.setOption(fftChartOptions);
-
-
-        navigator.mediaDevices
-            .getUserMedia(constraints)
-            .then((stream) => {
-                source = audioCtx.createMediaStreamSource(stream);
-
-                const analyser = audioCtx.createAnalyser();
-                analyser.fftSize = 8192 * 2;
-
-                const bufferLength = analyser.frequencyBinCount;
-                const dataArray = new Float32Array(bufferLength);
-                const freqAmpArray = new Float32Array(bufferLength);
-
-                var pitchDict = getNotesDict(tuningFreq);
-
-                source.connect(analyser);
-
-                var freqValues = new Float32Array(bufferLength);
-                for (let i = 0; i < bufferLength; i++) {
-                    freqValues[i] = audioCtx.sampleRate / bufferLength * i;
-                }
-
-                setInterval(() => {
-                    analyser.getFloatTimeDomainData(dataArray);
-                    analyser.getFloatFrequencyData(freqAmpArray);
-
-                    var if0 = indexOfMax(freqAmpArray);
-                    var f0 = freqValues[if0];
-
-                    // find closest note
-                    var closestNote = findClosestNote(f0, tuningFreq);
-                    $("#Note").text(closestNote);
-                    $("#Freq").text(Math.round(f0) + " Hz")
-
-                    var _plotArray = [];
-                    for (let i = 0; i < freqAmpArray.length; i++) {
-                        _plotArray.push([freqValues[i], freqAmpArray[i]])
-                    }
-                    fftChartOptions.series[0].data = _plotArray;
-                    fftChart.setOption(fftChartOptions);
-
-                    // calculate THD
-                    // f0 power
-                    var f0Pow = 0;
-                    const fftIndexLookup = 4
-                    for (let i = -fftIndexLookup; i <= fftIndexLookup; i++){
-                        f0pow = freqAmpArray[if0 + i]
-                    }
-
-
-                    var fbarvalue = 0;
-                    $("#thdbar").progressbar("value", thdbarvalue);
-
-                    // console.log(closestNote);
-                    // console.log(dataArray);
-                    // console.log(freqArray);
-                    // console.log(fftValues);
-                    // console.log(freqAmpArray);
-                }, 100)
-
-
-            })
-            .catch(function (err) {
-                console.error("The following gUM error occured: " + err);
-                audioCtx.close();
-            }, 1000);
 
     </script>
 </body>
