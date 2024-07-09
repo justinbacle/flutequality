@@ -1,0 +1,178 @@
+<!doctype html>
+
+<head>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://code.jquery.com/ui/1.13.3/jquery-ui.min.js"></script>
+    <link rel="stylesheet" href="https://code.jquery.com/ui/1.13.3/themes/base/jquery-ui.css">
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
+
+</head>
+
+<body>
+
+    <div id="fftchart" style="width: 600px;height:400px;"></div>
+    <div id="thdbar""></div>
+    <h3 id="Freq"># Hz</h2>
+    <h2 id="Note">X0</h2>
+
+
+    <script>
+        $(function () {
+            $(" #thdbar").progressbar({ value: 0 });
+        }); </script>
+
+    <script>
+        function indexOfMax(arr) {
+            if (arr.length === 0) {
+                return -1;
+            }
+
+            var max = arr[0];
+            var maxIndex = 0;
+
+            for (var i = 1; i < arr.length; i++) {
+                if (arr[i] > max) {
+                    maxIndex = i;
+                    max = arr[i];
+                }
+            }
+
+            return maxIndex;
+        }
+    </script>
+
+    <script>
+        function getNotesDict(a4tuning) {
+            // 12 equal temperament system :
+            // f = 2^(h/12) x tuningf
+            // where h is the number of semitones (half steps) above or below tuning reference (e.g. A4: 440Hz)
+            
+            var pitchDict = {}
+            var notesArray = ["A", "Bb", "B", "C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#"]
+            var a0tuning = Math.pow(2, (-12 * 4)/12) * a4tuning;
+            for (var octave=0; octave < 6; octave++){
+                for (var note = 0; note < 12; note++){
+                    var _note = notesArray[note].concat(octave.toString());
+                    var _freq = Math.pow(2, (12 * octave + note)/12) * a0tuning;
+                    pitchDict[_note] = _freq;
+                }
+            }
+            return pitchDict;
+        }
+
+        function findClosestNote(freq, tuning) {
+            var _freqDiff = 9999;
+            var _notename = ""
+            for (const [key, value] of Object.entries(getNotesDict(tuning))) {
+                if (Math.abs(freq - value) < _freqDiff){
+                    _freqDiff = Math.abs(freq - value);
+                    _notename = key
+                }
+            }
+            return _notename
+        }
+    </script>
+
+    <script>
+        const tuningFreq = 440;
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        audioCtx.resume();
+        let source;
+        const constraints = { audio: true };
+
+        var notesDict = getNotesDict(tuningFreq);
+
+        var fftChart = echarts.init(document.getElementById('fftchart'));
+        var fftChartOptions = {
+            title: {
+                text: "FFT"
+            },
+            xAxis: {
+                type: 'log',
+                min: 20,
+                max: 20000
+            },
+            yAxis: {
+                type: 'value'
+            },
+            series: [
+                {
+                    data: [],
+                    type: 'line',
+                    showSymbol: false,
+                }
+            ],
+            animation: false
+        }
+        fftChart.setOption(fftChartOptions);
+
+
+        navigator.mediaDevices
+            .getUserMedia(constraints)
+            .then((stream) => {
+                source = audioCtx.createMediaStreamSource(stream);
+
+                const analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 8192 * 2;
+
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Float32Array(bufferLength);
+                const freqAmpArray = new Float32Array(bufferLength);
+
+                var pitchDict = getNotesDict(tuningFreq);
+
+                source.connect(analyser);
+
+                var freqValues = new Float32Array(bufferLength);
+                for (let i = 0; i < bufferLength; i++) {
+                    freqValues[i] = audioCtx.sampleRate / bufferLength * i;
+                }
+
+                setInterval(() => {
+                    analyser.getFloatTimeDomainData(dataArray);
+                    analyser.getFloatFrequencyData(freqAmpArray);
+
+                    var if0 = indexOfMax(freqAmpArray);
+                    var f0 = freqValues[if0];
+
+                    // find closest note
+                    var closestNote = findClosestNote(f0, tuningFreq);
+                    $("#Note").text(closestNote);
+                    $("#Freq").text(Math.round(f0) + " Hz")
+
+                    var _plotArray = [];
+                    for (let i = 0; i < freqAmpArray.length; i++) {
+                        _plotArray.push([freqValues[i], freqAmpArray[i]])
+                    }
+                    fftChartOptions.series[0].data = _plotArray;
+                    fftChart.setOption(fftChartOptions);
+
+                    // calculate THD
+                    // f0 power
+                    var f0Pow = 0;
+                    const fftIndexLookup = 4
+                    for (let i = -fftIndexLookup; i <= fftIndexLookup; i++){
+                        f0pow = freqAmpArray[if0 + i]
+                    }
+
+
+                    var fbarvalue = 0;
+                    $("#thdbar").progressbar("value", thdbarvalue);
+
+                    // console.log(closestNote);
+                    // console.log(dataArray);
+                    // console.log(freqArray);
+                    // console.log(fftValues);
+                    // console.log(freqAmpArray);
+                }, 100)
+
+
+            })
+            .catch(function (err) {
+                console.error("The following gUM error occured: " + err);
+                audioCtx.close();
+            }, 1000);
+
+    </script>
+</body>

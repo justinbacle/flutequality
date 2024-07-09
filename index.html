@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Pitch Detection</title>
+</head>
+
+<body>
+    <h1>Frequency (Hz)</h1>
+    <h2 id="frequency">0.0</h2>
+    <div>
+        <button onclick="startPitchDetection()">
+            Start Pitch Detection
+        </button>
+    </div>
+    <script>
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(
+            function (stream) {
+                var audioContext = new AudioContext();
+                var source = audioContext.createMediaStreamSource(stream);
+                let analyserNode = audioContext.createAnalyser();
+                source.connect(analyserNode);
+                let freqArray =  new Float32Array(analyserNode.frequencyBinCount);
+                analyserNode.getFloatFrequencyData(freqArray)
+                console.log(freqArray);
+
+            }
+        ).catch(function (error) { console.error(error); })
+
+
+    </script>
+</body>
+
+</html>
