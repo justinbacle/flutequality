@@ -15,11 +15,17 @@
 
     <h3 id="Freq"># Hz</h3>
     <h2 id="Note">X0</h2>
+    <div id="ThdnGauge" style="width: 100%;height:400px;"></div>
     <p id="thdn">THD+N</p>
     <p id="harmnonicsratio">Harmonics/non-harmonics ratio</p>
-    <div id="fftChart" style="width: 600px;height:300px;"></div>
-    <div id="harmonicsChart" style="width: 600px;height:400px;"></div>
+    <div id="fftChart" style="width: 100%;height:300px;"></div>
+    <div id="harmonicsChart" style="width: 100%;height:400px;"></div>
 
+    <!-- OFFLINE AUDIO TESTING -->
+    <!-- <audio id="audio" loop controls src="test_signals/354657__mtg__flute-e4.wav"></audio> -->
+    <!-- <audio id="audio" loop controls src="test_signals/sine+noise.wav"></audio> -->
+    <audio id="audio" loop controls src="test_signals/good_0003.wav"></audio>
+    <!-- <audio id="audio" loop controls src="test_signals/bad_0006.wav"></audio> -->
 
     <script>
         $(function () {
@@ -68,7 +74,7 @@
         function findClosestNote(freq, tuning) {
             var _freqDiff = 9999;
             var _notename = ""
-            for (const [key, value] of Object.entries(getNotesDict(tuning))) {
+            for (var [key, value] of Object.entries(getNotesDict(tuning))) {
                 if (Math.abs(freq - value) < _freqDiff) {
                     _freqDiff = Math.abs(freq - value);
                     _notename = key
@@ -81,13 +87,17 @@
     <script>
         const TIMECONSTANT = 50;
         function run() {
-            const tuningFreq = 440;
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const constraints = { audio: true };
+            const TUNING_FREQ = 440;
+            const FFT_INDEX_LOOKUP = 4;
+            const N_HARMONICS = 10;
+            const FFTSIZE = 2048;
+
             audioCtx.resume();
             let source;
-            const constraints = { audio: true };
 
-            var notesDict = getNotesDict(tuningFreq);
+            var notesDict = getNotesDict(TUNING_FREQ);
 
             var fftChart = echarts.init(document.getElementById('fftChart'));
             var fftChartOptions = {
@@ -100,7 +110,8 @@
                     max: 20000
                 },
                 yAxis: {
-                    type: 'value'
+                    type: 'value',
+                    min: -120
                 },
                 series: [
                     {
@@ -113,34 +124,132 @@
             }
             fftChart.setOption(fftChartOptions);
 
+            xAxisData = []
+            for (let i = 0; i <= N_HARMONICS; i++) {
+                xAxisData.push("f" + i);
+            }
+            xAxisData.push("non-harmonics");
+
             var harmonicsChart = echarts.init(document.getElementById('harmonicsChart'));
             var harmonicsChartOptions = {
                 title: { text: 'Harmonics' },
                 xAxis: {
                     type: 'category',
-                    data: ['f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'non-harmonics']
+                    data: xAxisData
                 },
-                yAxis: { type: 'log', min: 1 },
+                // yAxis: { type: 'log', min: 0.01 },
+                yAxis: { type: 'value' },
                 series: [{ data: [], type: 'bar' }],
                 animation: false
             }
             harmonicsChart.setOption(harmonicsChartOptions)
 
+            var thdnGauge = echarts.init(document.getElementById('ThdnGauge'));
+            var thdnGaugeOptions;
+
+            thdnGaugeOptions = {
+                // animation: false,
+                series: [
+                    {
+                        type: 'gauge',
+                        startAngle: 180,
+                        endAngle: 0,
+                        center: ['50%', '75%'],
+                        radius: '90%',
+                        min: 0,
+                        max: 1,
+                        splitNumber: 8,
+                        axisLine: {
+                            lineStyle: {
+                                width: 4,
+                                color: [[0.25, '#f22'], [0.5, '#bb0'], [0.75, '#080'], [1, '#094']]
+                            }
+                        },
+                        pointer: {
+                            icon: 'path://M12.8,0.7l12,40.1H0.7L12.8,0.7z',
+                            length: '12%',
+                            width: 20,
+                            offsetCenter: [0, '-70%'],
+                            itemStyle: {color: 'auto'}
+                        },
+                        axisTick: {
+                            length: 10,
+                            lineStyle: {color: 'auto', width: 2}
+                        },
+                        splitLine: {
+                            length: 16,
+                            lineStyle: {color: 'auto', width: 4}
+                        },
+                        axisLabel: {
+                            color: '#222',
+                            fontSize: 20,
+                            distance: -60,
+                            rotate: 'tangential',
+                            formatter: function (value) {
+                                if (value === 0.875) {
+                                    return 'Excellent';
+                                } else if (value === 0.625) {
+                                    return 'Good';
+                                } else if (value === 0.375) {
+                                    return 'Low';
+                                } else if (value === 0.125) {
+                                    return 'Poor';
+                                }
+                                return '';
+                            }
+                        },
+                        title: {
+                            offsetCenter: [0, '-10%'],
+                            fontSize: 20
+                        },
+                        detail: {
+                            fontSize: 30,
+                            offsetCenter: [0, '-35%'],
+                            valueAnimation: true,
+                            formatter: function (value) {
+                                return Math.round(value * 100) + '';
+                            },
+                            color: 'inherit'
+                        },
+                        data: [
+                            {
+                                value: 0.7,
+                                name: 'Harmonics'
+                            }
+                        ]
+                    }
+                ]
+            };
+            thdnGauge.setOption(thdnGaugeOptions);
+
+            // audio
             navigator.mediaDevices
                 .getUserMedia(constraints)
                 .then((stream) => {
-                    source = audioCtx.createMediaStreamSource(stream);
+                    // source = audioCtx.createMediaStreamSource(stream);  // microphone stream
+                    var audio = document.getElementById('audio')
+                    source = audioCtx.createMediaElementSource(audio);  // dom/file stream
+                    audio.play();
 
-                    const analyser = audioCtx.createAnalyser();
-                    analyser.fftSize = 512 * 4;
+                    // 80Hz High pass filter
+                    var filterNode = audioCtx.createBiquadFilter();
+                    filterNode.type = "highpass";
+                    filterNode.frequency = 80;
+                    filterNode.Q = 1;
 
-                    const bufferLength = analyser.frequencyBinCount;
+                    source.connect(filterNode);
+
+                    var analyser = audioCtx.createAnalyser();
+                    analyser.fftSize = FFTSIZE;
+
+                    filterNode.connect(analyser);
+
+                    var bufferLength = analyser.frequencyBinCount;
                     var dataArray = new Float32Array(bufferLength);
                     var freqAmpArray = new Float32Array(bufferLength);
 
-                    var pitchDict = getNotesDict(tuningFreq);
+                    var pitchDict = getNotesDict(TUNING_FREQ);
 
-                    source.connect(analyser);
 
                     var freqValues = new Float32Array(bufferLength);
                     for (let i = 0; i < bufferLength; i++) {
@@ -152,15 +261,16 @@
                         analyser.getFloatTimeDomainData(dataArray);
                         analyser.getFloatFrequencyData(freqAmpArray);
 
-                        freqAmpArray = freqAmpArray.map((x) => x + 96);  // 96 for bit depth 16
+                        // freqAmpArray = freqAmpArray.map((x) => x + 96);  // 96 for bit depth 16
 
+                        // TODO handle when fn amp > f0
                         var if0 = indexOfMax(freqAmpArray);
                         var f0 = freqValues[if0];
 
                         // find closest note
-                        var closestNote = findClosestNote(f0, tuningFreq);
+                        var closestNote = findClosestNote(f0, TUNING_FREQ);
                         $("#Note").text(closestNote);
-                        $("#Freq").text(Math.round(f0).toString() + " Hz");
+                        $("#Freq").text(Math.round(f0).toString() + " Hz (i:" + if0 + ")");
 
                         var _plotArray = [];
                         for (let i = 0; i < freqAmpArray.length; i++) {
@@ -169,13 +279,11 @@
                         fftChartOptions.series[0].data = _plotArray;
                         fftChart.setOption(fftChartOptions);
 
-
-                        const fftIndexLookup = 4;
                         // calculate THD+N
                         var f0Pow = 0;
                         var nonf0Pow = 0;
-                        for (let i = 0; i < freqAmpArray.length; i++) {
-                            if (Math.abs(i - if0) <= fftIndexLookup) {
+                        for (let i = 1; i < freqAmpArray.length; i++) {
+                            if (Math.abs(i - if0) <= FFT_INDEX_LOOKUP) {
                                 f0Pow = Math.pow(10, freqAmpArray[i] / 20) + f0Pow;
                             }
                             else {
@@ -183,41 +291,66 @@
                             }
                         }
                         var thdn = nonf0Pow / f0Pow;
-                        $("#thdn").text("THD+N: " + Math.round(thdn) + "%");
+                        $("#thdn").text("THD+N: " + Math.round(thdn * 100) / 100 + "%");
+                        thdnGaugeOptions.series[0].data.value = thdn * 25;
+                        console.log(thdn * 25);
+                        thdnGauge.setOption(thdnGaugeOptions);
 
-                        // calculate non-harmonic power
+                        // calculate harmonic & non-harmonic power
                         var harmonicIndices = [];
+
+                        // calculate total power
+                        var totalPow = 0;
+                        for (let i = 1; i < freqAmpArray.length; i++) {
+                            totalPow = Math.pow(10, freqAmpArray[i] / 20) / freqValues[i] + totalPow;
+                        }
 
                         // calculate THD
                         // fN power
-                        const nHarmonics = 8;
                         var harmonicsPowerArray = []
-                        for (let n = 1; n <= nHarmonics + 1; n++) {
+                        for (let n = 1; n <= N_HARMONICS; n++) {
                             var harmPow = 0;
-                            for (let i = -fftIndexLookup; i <= fftIndexLookup; i++) {
-                                harmPow = Math.pow(10, freqAmpArray[if0 * n + i] / 20) + harmPow;
-                                harmonicIndices.push(i);
+                            for (let i = -FFT_INDEX_LOOKUP; i <= FFT_INDEX_LOOKUP; i++) {
+                                harmPow = Math.pow(10, freqAmpArray[if0 * n + i] / 20) / freqValues[if0 * n + i] + harmPow;
+                                harmonicIndices.push(if0 * n + i);
                             }
-                            harmonicsPowerArray.push(harmPow);
+                            harmonicsPowerArray.push(harmPow / totalPow);
                         }
 
                         // back to non harmonic
                         var nonHarmPow = 0;
                         var fnPow = 0;
-                        for (let i = 0; i < freqAmpArray.length; i++) {
+                        for (let i = 1; i < freqAmpArray.length; i++) {
                             if (!(harmonicIndices.includes(i))) {
-                                nonHarmPow = Math.pow(10, freqAmpArray[i] / 20) + nonHarmPow;
+                                nonHarmPow = Math.pow(10, freqAmpArray[i] / 20) / freqValues[i] + nonHarmPow;
                             } else {
-                                fnPow = Math.pow(10, freqAmpArray[i] / 20) + fnPow;
+                                fnPow = Math.pow(10, freqAmpArray[i] / 20) / freqValues[i] + fnPow;
                             }
                         }
-                        // console.log(nonHarmPow);
+
                         // adding non harm power at the and for plotting
-                        harmonicsPowerArray.push(nonHarmPow);
-                        $("#harmnonicsratio").text("Harm/non-harm ratio= " + Math.round(fnPow / nonHarmPow * 100) + "%");
+                        harmonicsPowerArray.push(nonHarmPow / totalPow);
+
+                        // powercheck
+                        var totalPow = 0
+                        for (let i = 0; i < harmonicsPowerArray.length; i++) {
+                            totalPow = totalPow + harmonicsPowerArray[i];
+                        }
+                        totalPow = totalPow + nonHarmPow;
+                        // console.log(totalPow);  // ~= 1.001 -> OK
+
+                        $("#harmnonicsratio").text("Harm/non-harm ratio= " + Math.round(fnPow / nonHarmPow));
 
                         harmonicsChartOptions.series[0].data = harmonicsPowerArray;
                         harmonicsChart.setOption(harmonicsChartOptions);
+
+                        // BAD Sound : 
+                        // THD+N : 0.4<->0.7%
+                        // Harm/!Harm : 10<->13
+
+                        // GOOD Sound : 
+                        // THD+N : 1.5%<->4%
+                        // Harm/!Harm : 3<->6
 
                         // var thdbarvalue = harmPow / (f0Pow + harmPow) * 100;
                         // $("#thdbar").progressbar("value", thdbarvalue);
