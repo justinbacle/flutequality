@@ -13,11 +13,12 @@
 
     <button onclick="run()">Run</button>
 
-    <div id="fftChart" style="width: 600px;height:400px;"></div>
     <h3 id="Freq"># Hz</h3>
     <h2 id="Note">X0</h2>
+    <p id="thdn">THD+N</p>
+    <p id="harmnonicsratio">Harmonics/non-harmonics ratio</p>
+    <div id="fftChart" style="width: 600px;height:300px;"></div>
     <div id="harmonicsChart" style="width: 600px;height:400px;"></div>
-    <div id="thdbar"></div>
 
 
     <script>
@@ -78,6 +79,7 @@
     </script>
 
     <script>
+        const TIMECONSTANT = 50;
         function run() {
             const tuningFreq = 440;
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -113,13 +115,13 @@
 
             var harmonicsChart = echarts.init(document.getElementById('harmonicsChart'));
             var harmonicsChartOptions = {
-                title: {text: 'Harmonics'},
+                title: { text: 'Harmonics' },
                 xAxis: {
                     type: 'category',
                     data: ['f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'non-harmonics']
                 },
-                yAxis: {type: 'log', min: 1},
-                series: [{data: [], type: 'bar'}],
+                yAxis: { type: 'log', min: 1 },
+                series: [{ data: [], type: 'bar' }],
                 animation: false
             }
             harmonicsChart.setOption(harmonicsChartOptions)
@@ -130,7 +132,7 @@
                     source = audioCtx.createMediaStreamSource(stream);
 
                     const analyser = audioCtx.createAnalyser();
-                    analyser.fftSize = 8192 / 2;
+                    analyser.fftSize = 512 * 4;
 
                     const bufferLength = analyser.frequencyBinCount;
                     var dataArray = new Float32Array(bufferLength);
@@ -142,10 +144,11 @@
 
                     var freqValues = new Float32Array(bufferLength);
                     for (let i = 0; i < bufferLength; i++) {
-                        freqValues[i] = audioCtx.sampleRate / bufferLength * i;
+                        freqValues[i] = audioCtx.sampleRate / bufferLength * i / 2;
                     }
 
                     setInterval(() => {
+                        // TODO add A-weighted filter
                         analyser.getFloatTimeDomainData(dataArray);
                         analyser.getFloatFrequencyData(freqAmpArray);
 
@@ -166,18 +169,53 @@
                         fftChartOptions.series[0].data = _plotArray;
                         fftChart.setOption(fftChartOptions);
 
+
+                        const fftIndexLookup = 4;
+                        // calculate THD+N
+                        var f0Pow = 0;
+                        var nonf0Pow = 0;
+                        for (let i = 0; i < freqAmpArray.length; i++) {
+                            if (Math.abs(i - if0) <= fftIndexLookup) {
+                                f0Pow = Math.pow(10, freqAmpArray[i] / 20) + f0Pow;
+                            }
+                            else {
+                                nonf0Pow = Math.pow(10, freqAmpArray[i] / 20) + nonf0Pow;
+                            }
+                        }
+                        var thdn = nonf0Pow / f0Pow;
+                        $("#thdn").text("THD+N: " + Math.round(thdn) + "%");
+
+                        // calculate non-harmonic power
+                        var harmonicIndices = [];
+
                         // calculate THD
                         // fN power
                         const nHarmonics = 8;
-                        const fftIndexLookup = 4;
                         var harmonicsPowerArray = []
-                        for (let n = 1; n <= nHarmonics + 1; n++){
+                        for (let n = 1; n <= nHarmonics + 1; n++) {
                             var harmPow = 0;
                             for (let i = -fftIndexLookup; i <= fftIndexLookup; i++) {
                                 harmPow = Math.pow(10, freqAmpArray[if0 * n + i] / 20) + harmPow;
+                                harmonicIndices.push(i);
                             }
                             harmonicsPowerArray.push(harmPow);
                         }
+
+                        // back to non harmonic
+                        var nonHarmPow = 0;
+                        var fnPow = 0;
+                        for (let i = 0; i < freqAmpArray.length; i++) {
+                            if (!(harmonicIndices.includes(i))) {
+                                nonHarmPow = Math.pow(10, freqAmpArray[i] / 20) + nonHarmPow;
+                            } else {
+                                fnPow = Math.pow(10, freqAmpArray[i] / 20) + fnPow;
+                            }
+                        }
+                        // console.log(nonHarmPow);
+                        // adding non harm power at the and for plotting
+                        harmonicsPowerArray.push(nonHarmPow);
+                        $("#harmnonicsratio").text("Harm/non-harm ratio= " + Math.round(fnPow / nonHarmPow * 100) + "%");
+
                         harmonicsChartOptions.series[0].data = harmonicsPowerArray;
                         harmonicsChart.setOption(harmonicsChartOptions);
 
@@ -188,14 +226,14 @@
                         // console.log(freqArray);
                         // console.log(fftValues);
                         // console.log(freqAmpArray);
-                    }, 100)
+                    }, TIMECONSTANT)
 
 
                 })
                 .catch(function (err) {
                     console.error("The following gUM error occured: " + err);
                     audioCtx.close();
-                }, 500);
+                }, TIMECONSTANT);
         }
 
     </script>
