@@ -341,6 +341,7 @@
             // THD Gauge
             var thdGauge = echarts.init(document.getElementById('ThdGauge'));
             var thdGaugeOptions;
+            const THD_GAUGE_MULT = 1;
             thdGaugeOptions = {
                 animation: false,
                 series: [
@@ -351,12 +352,12 @@
                         center: ['50%', '75%'],
                         radius: '90%',
                         min: 0,
-                        max: 4,
+                        max: THD_GAUGE_MULT,
                         splitNumber: 8,
                         axisLine: {
                             lineStyle: {
                                 width: 4,
-                                color: [[0.25, '#f22'], [0.5, '#080'], [0.75, '#bb0'], [1, '#f22']]
+                                color: [[0.25, '#f22'], [0.5, '#bb0'], [0.75, '#080'], [1, '#094']]
                             }
                         },
                         pointer: {
@@ -380,13 +381,13 @@
                             distance: -60,
                             rotate: 'tangential',
                             formatter: function (value) {
-                                if (value === 0.875 * 4) {
-                                    return 'Poor';
-                                } else if (value === 0.625 * 4) {
-                                    return 'OK';
-                                } else if (value === 0.375 * 4) {
+                                if (value === 0.875 * THD_GAUGE_MULT) {
+                                    return 'Excellent';
+                                } else if (value === 0.625 * THD_GAUGE_MULT) {
                                     return 'Good';
-                                } else if (value === 0.125 * 4) {
+                                } else if (value === 0.375 * THD_GAUGE_MULT) {
+                                    return 'Low';
+                                } else if (value === 0.125 * THD_GAUGE_MULT) {
                                     return 'Poor';
                                 }
                                 return '';
@@ -519,7 +520,8 @@
                             }
                             harmonicsPowerArray.push(harmPow / totalPow);
                         }
-                        var thd = harmonicsPowerArray[0] / harmonicsPowerArray.slice(1).reduce((partialSum, a) => partialSum + a, 0);
+                        var _harmonicsPow = harmonicsPowerArray.slice(1).reduce((partialSum, a) => partialSum + a, 0);
+                        var thd = _harmonicsPow / harmonicsPowerArray[0];
                         thdGaugeOptions.series[0].data[0].value = thd;
                         thdGauge.setOption(thdGaugeOptions);
 
