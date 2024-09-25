@@ -1,13 +1,608 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
 
 <head>
-    <meta charset="UTF-8">
-    <title>Pitch Detection</title>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://code.jquery.com/ui/1.13.3/jquery-ui.min.js"></script>
+    <link rel="stylesheet" href="https://code.jquery.com/ui/1.13.3/themes/base/jquery-ui.css">
+
+    <script src="https://cdn.jsdelivr.net/npm/meyda@5.6.3/dist/web/meyda.min.js"></script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
+
 </head>
 
 <body>
-    <script src="index.js"></script>
-</body>
 
-</html>
+    <button onclick="run()">Run</button>
+
+    <h3 id="Freq"># Hz</h3>
+    <h2 id="Note">X0</h2>
+    <p id="Cents">+X</p>
+    <div id="ThdnGauge" style="width: 50%;height:300px;float:left;"></div>
+    <div id="ThdGauge" style="width: 50%;height:300px;margin-left:50%;"></div>
+    <p id="harmnonicsratio">Harmonics/non-harmonics ratio</p>
+    <div id="fftChart" style="width: 100%;height:300px;"></div>
+    <div id="harmonicsChart" style="width: 100%;height:300px;"></div>
+
+    <!-- OFFLINE AUDIO TESTING -->
+    <!-- <audio id="audio" loop controls src="test_signals/354657__mtg__flute-e4.wav"></audio> -->
+    <!-- <audio id="audio" loop controls src="test_signals/good_florian_001.wav"></audio> -->
+    <!-- <audio id="audio" loop controls src="test_signals/sine+noise.wav"></audio> -->
+    <!-- <audio id="audio" loop controls src="test_signals/400-3000_sweep.wav"></audio> -->
+    <!-- <audio id="audio" loop controls src="test_signals/good_0003.wav"></audio> -->
+    <!-- <audio id="audio" loop controls src="test_signals/bad_0006.wav"></audio> -->
+    <!-- <audio id="audio" loop controls src="test_signals/1000-1005_sweep.wav"></audio> -->
+
+    <script>
+        $(function () {
+            $(" #thdbar").progressbar({ value: 0 });
+        }); </script>
+
+    <script>
+        function indexOfMax(arr) {
+            if (arr.length === 0) {
+                return -1;
+            }
+
+            var max = arr[0];
+            var maxIndex = 0;
+
+            for (var i = 1; i < arr.length; i++) {
+                if (arr[i] > max) {
+                    maxIndex = i;
+                    max = arr[i];
+                }
+            }
+
+            return maxIndex;
+        }
+    </script>
+
+    <script>
+        function getNotesDict(a4tuning) {
+            // 12 equal temperament system :
+            // f = 2^(h/12) x tuningf
+            // where h is the number of semitones (half steps) above or below tuning reference (e.g. A4: 440Hz)
+
+            var pitchDict = {}
+            var notesArray = ["A", "Bb", "B", "C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#"]
+            var a0tuning = Math.pow(2, (-12 * 4) / 12) * a4tuning;
+            for (var octave = 0; octave <= 6; octave++) {
+                for (var note = 0; note < 12; note++) {
+                    var _note = notesArray[note].concat(octave.toString());
+                    var _freq = Math.pow(2, (12 * octave + note) / 12) * a0tuning;
+                    pitchDict[_note] = _freq;
+                }
+            }
+            return pitchDict;
+        }
+
+        function findClosestNote(freq, tuning) {
+            var _freqDiff = 9999;
+            var _notename = ""
+            for (var [key, value] of Object.entries(getNotesDict(tuning))) {
+                if (Math.abs(freq - value) < _freqDiff) {
+                    _freqDiff = Math.abs(freq - value);
+                    _notename = key
+                }
+            }
+            return _notename
+        }
+    </script>
+
+    <script>
+
+        // https://stackoverflow.com/a/65410414/10694594
+        let decor = (v, i) => [v, i]; // combine index and value as pair
+        let undecor = pair => pair[1];  // remove value from pair
+        const argsort = arr => arr.map(decor).sort().map(undecor);
+
+        // from https://www.samproell.io/posts/signal/peak-finding-python-js/
+        /**
+         * Get indices of all local maxima in a sequence.
+         * @param {number[]} xs - sequence of numbers
+         * @returns {number[]} indices of local maxima
+         */
+        function find_local_maxima(xs) {
+            let maxima = [];
+            // iterate through all points and compare direct neighbors
+            for (let i = 1; i < xs.length - 1; ++i) {
+                if (xs[i] > xs[i - 1] && xs[i] > xs[i + 1])
+                    maxima.push(i);
+            }
+            return maxima;
+        }
+
+        /**
+         * Remove peaks below minimum height.
+         * @param {number[]} indices - indices of peaks in xs
+         * @param {number[]} xs - original signal
+         * @param {number} height - minimum peak height
+         * @returns {number[]} filtered peak index list
+         */
+        function filter_by_height(indices, xs, height) {
+            return indices.filter(i => xs[i] > height);
+        }
+
+        /**
+         * Remove peaks that are too close to higher ones.
+         * @param {number[]} indices - indices of peaks in xs
+         * @param {number[]} xs - original signal
+         * @param {number} dist - minimum distance between peaks
+         * @returns {number[]} filtered peak index list
+         */
+        function filter_by_distance(indices, xs, dist) {
+            let to_remove = Array(indices.length).fill(false);
+            let heights = indices.map(i => xs[i]);
+            let sorted_index_positions = argsort(heights).reverse();
+
+            // adapted from SciPy find_peaks
+            for (let current of sorted_index_positions) {
+                if (to_remove[current]) {
+                    continue;  // peak will already be removed, move on.
+                }
+
+                let neighbor = current-1;  // check on left side of peak
+                while (neighbor >= 0 && (indices[current]-indices[neighbor]) < dist) {
+                    to_remove[neighbor] = true;
+                    --neighbor;
+                }
+
+                neighbor = current+1;  // check on right side of peak
+                while (neighbor < indices.length
+                    && (indices[neighbor]-indices[current]) < dist) {
+                    to_remove[neighbor] = true;
+                    ++neighbor;
+                }
+            }
+            return indices.filter((v, i) => !to_remove[i]);
+        }
+
+        /**
+         * Filter peaks by required properties.
+         * @param {number[]}} indices - indices of peaks in xs
+         * @param {number[]} xs - original signal
+         * @param {number} distance - minimum distance between peaks
+         * @param {number} height - minimum height of peaks
+         * @returns {number[]} filtered peak indices
+         */
+        function filter_maxima(indices, xs, distance, height) {
+            let new_indices = indices;
+            if (height != undefined) {
+                new_indices = filter_by_height(indices, xs, height);
+            }
+            if (distance != undefined) {
+                new_indices = filter_by_distance(new_indices, xs, distance);
+            }
+            return new_indices;
+        }
+
+        /**
+         * Simplified version of SciPy's find_peaks function.
+         * @param {number[]} xs - input signal
+         * @param {number} distance - minimum distance between peaks
+         * @param {number} height - minimum height of peaks
+         * @returns {number[]} peak indices
+         */
+        function minimal_find_peaks(xs, distance, height) {
+            let indices = find_local_maxima(xs)
+            return filter_maxima(indices, xs, distance, height);
+        }
+
+
+        function processMeyda(features) {
+            features["spectralFlatness"]
+            features["spectralSlope"]
+            features["spectralSpread"]
+            features["spectralSkewness"]
+            features["spectralKurtosis"]
+            features["perceptualSpread"]
+        }
+
+    </script>
+
+    <script>
+        const TIMECONSTANT = 1 / 60 * 1000;
+        function run() {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const constraints = { audio: true };
+            const TUNING_FREQ = 440;
+            const FFT_INDEX_LOOKUP = 4;
+            const N_HARMONICS = 10;
+            const FFTSIZE = Math.pow(2, 14);
+
+            audioCtx.resume();
+            let source;
+
+            var notesDict = getNotesDict(TUNING_FREQ);
+
+            var fftChart = echarts.init(document.getElementById('fftChart'));
+            var fftChartOptions = {
+                title: {
+                    text: "FFT"
+                },
+                xAxis: {
+                    type: 'log',
+                    min: 20,
+                    max: 20000
+                },
+                yAxis: {
+                    type: 'value',
+                    min: -120
+                },
+                series: [
+                    {
+                        data: [],
+                        type: 'line',
+                        showSymbol: false,
+                    }
+                ],
+                animation: false
+            }
+            fftChart.setOption(fftChartOptions);
+
+            xAxisData = []
+            for (let i = 0; i <= N_HARMONICS; i++) {
+                xAxisData.push("f" + i);
+            }
+            xAxisData.push("non-harmonics");
+
+            var harmonicsChart = echarts.init(document.getElementById('harmonicsChart'));
+            var harmonicsChartOptions = {
+                title: { text: 'Harmonics' },
+                xAxis: {
+                    type: 'category',
+                    data: xAxisData,
+                    position: 'bottom',
+                },
+                yAxis: { type: 'log', min: 0.0001, max: 1, axisLine: { onZero: false } },
+                // yAxis: { type: 'value', min: 0, max: 1 },
+                series: [
+                    {
+                        data: [],
+                        type: 'bar',
+                        color: 'rgba(255, 255, 255, 1)',
+                        showBackground: true,
+                        backgroundStyle: {
+                            color: 'rgba(100, 100, 255, 1)'
+                        }
+                    }
+                ],
+                animation: false
+            }
+            harmonicsChart.setOption(harmonicsChartOptions)
+
+            // THDN Gauge
+            var thdnGauge = echarts.init(document.getElementById('ThdnGauge'));
+            var thdnGaugeOptions;
+            thdnGaugeOptions = {
+                animation: false,
+                series: [
+                    {
+                        type: 'gauge',
+                        startAngle: 180,
+                        endAngle: 0,
+                        center: ['50%', '75%'],
+                        radius: '90%',
+                        min: 0,
+                        max: 4,
+                        splitNumber: 8,
+                        axisLine: {
+                            lineStyle: {
+                                width: 4,
+                                color: [[0.25, '#f22'], [0.5, '#bb0'], [0.75, '#080'], [1, '#094']]
+                            }
+                        },
+                        pointer: {
+                            icon: 'path://M12.8,0.7l12,40.1H0.7L12.8,0.7z',
+                            length: '12%',
+                            width: 20,
+                            offsetCenter: [0, '-70%'],
+                            itemStyle: { color: 'auto' }
+                        },
+                        axisTick: {
+                            length: 10,
+                            lineStyle: { color: 'auto', width: 2 }
+                        },
+                        splitLine: {
+                            length: 16,
+                            lineStyle: { color: 'auto', width: 4 }
+                        },
+                        axisLabel: {
+                            color: '#222',
+                            fontSize: 20,
+                            distance: -60,
+                            rotate: 'tangential',
+                            formatter: function (value) {
+                                if (value === 0.875 * 4) {
+                                    return 'Excellent';
+                                } else if (value === 0.625 * 4) {
+                                    return 'Good';
+                                } else if (value === 0.375 * 4) {
+                                    return 'Low';
+                                } else if (value === 0.125 * 4) {
+                                    return 'Poor';
+                                }
+                                return '';
+                            }
+                        },
+                        title: {
+                            offsetCenter: [0, '-10%'],
+                            fontSize: 20
+                        },
+                        detail: {
+                            fontSize: 30,
+                            offsetCenter: [0, '-35%'],
+                            valueAnimation: true,
+                            formatter: function (value) {
+                                return Math.round(value * 10) / 10 + '%';
+                            },
+                            color: 'inherit'
+                        },
+                        data: [
+                            {
+                                value: 0,
+                                name: 'THD+N'
+                            }
+                        ]
+                    }
+                ]
+            };
+            thdnGauge.setOption(thdnGaugeOptions);
+
+            // THD Gauge
+            var thdGauge = echarts.init(document.getElementById('ThdGauge'));
+            var thdGaugeOptions;
+            const THD_GAUGE_MULT = 1;
+            thdGaugeOptions = {
+                animation: false,
+                series: [
+                    {
+                        type: 'gauge',
+                        startAngle: 180,
+                        endAngle: 0,
+                        center: ['50%', '75%'],
+                        radius: '90%',
+                        min: 0,
+                        max: THD_GAUGE_MULT,
+                        splitNumber: 8,
+                        axisLine: {
+                            lineStyle: {
+                                width: 4,
+                                color: [[0.25, '#f22'], [0.5, '#bb0'], [0.75, '#080'], [1, '#094']]
+                            }
+                        },
+                        pointer: {
+                            icon: 'path://M12.8,0.7l12,40.1H0.7L12.8,0.7z',
+                            length: '12%',
+                            width: 20,
+                            offsetCenter: [0, '-70%'],
+                            itemStyle: { color: 'auto' }
+                        },
+                        axisTick: {
+                            length: 10,
+                            lineStyle: { color: 'auto', width: 2 }
+                        },
+                        splitLine: {
+                            length: 16,
+                            lineStyle: { color: 'auto', width: 4 }
+                        },
+                        axisLabel: {
+                            color: '#222',
+                            fontSize: 20,
+                            distance: -60,
+                            rotate: 'tangential',
+                            formatter: function (value) {
+                                if (value === 0.875 * THD_GAUGE_MULT) {
+                                    return 'Excellent';
+                                } else if (value === 0.625 * THD_GAUGE_MULT) {
+                                    return 'Good';
+                                } else if (value === 0.375 * THD_GAUGE_MULT) {
+                                    return 'Low';
+                                } else if (value === 0.125 * THD_GAUGE_MULT) {
+                                    return 'Poor';
+                                }
+                                return '';
+                            }
+                        },
+                        title: {
+                            offsetCenter: [0, '-10%'],
+                            fontSize: 20
+                        },
+                        detail: {
+                            fontSize: 30,
+                            offsetCenter: [0, '-35%'],
+                            valueAnimation: true,
+                            formatter: function (value) {
+                                return Math.round(value * 10) / 10 + '%';
+                            },
+                            color: 'inherit'
+                        },
+                        data: [
+                            {
+                                value: 0,
+                                name: 'THD'
+                            }
+                        ]
+                    }
+                ]
+            };
+            thdGauge.setOption(thdGaugeOptions);
+
+            // audio
+            navigator.mediaDevices
+                .getUserMedia(constraints)
+                .then((stream) => {
+                    source = audioCtx.createMediaStreamSource(stream);  // microphone stream
+                    // var audio = document.getElementById('audio')
+                    // source = audioCtx.createMediaElementSource(audio);  // dom/file stream
+                    // audio.play();
+
+                    // 80Hz High pass filter
+                    var filterNode = audioCtx.createBiquadFilter();
+                    filterNode.type = "highpass";
+                    filterNode.frequency = 80;
+                    filterNode.Q = 1;
+
+                    source.connect(filterNode);
+
+                    var analyser = audioCtx.createAnalyser();
+                    analyser.fftSize = FFTSIZE;
+
+                    filterNode.connect(analyser);
+
+                    const analyzer = Meyda.createMeydaAnalyzer({
+                        audioContext: audioCtx,
+                        source: filterNode,
+                        bufferSize: FFTSIZE,
+                        featureExtractors: [
+                            // "spectralFlux" not working ?
+                            "spectralFlatness", "spectralSlope",
+                            "spectralSpread", "spectralSkewness", "spectralKurtosis",
+                            "perceptualSpread"],
+                        callback: (features) => {
+                            processMeyda(features);
+                        },
+                    });
+                    analyzer.start();
+
+                    var bufferLength = analyser.frequencyBinCount;
+                    var dataArray = new Float32Array(bufferLength);
+                    var freqAmpArray = new Float32Array(bufferLength);
+
+                    var freqValues = new Float32Array(bufferLength);
+                    for (let i = 0; i < bufferLength; i++) {
+                        freqValues[i] = audioCtx.sampleRate / bufferLength * i / 2;
+                    }
+
+                    setInterval(() => {
+                        // TODO add A-weighted filter
+                        analyser.getFloatTimeDomainData(dataArray);
+                        analyser.getFloatFrequencyData(freqAmpArray);
+
+                        // TODO handle when fn amp > f0
+                        //simple max mathod
+                        // var if0 = indexOfMax(freqAmpArray);
+                        // var f0 = freqValues[if0];
+                        // peaks method
+                        var peaks = minimal_find_peaks(freqAmpArray, FFT_INDEX_LOOKUP * 4, -60)
+                        if (peaks.length > 0) {
+                            var if0 = peaks[0];
+                            var f0 = freqValues[if0];
+                        }
+
+                        // find closest note
+                        var closestNote = findClosestNote(f0, TUNING_FREQ);
+                        $("#Note").text(closestNote);
+                        $("#Freq").text(Math.round(f0).toString() + " Hz (i:" + if0 + ")");
+
+                        // get detuning value (cents)
+                        // TODO not working ?
+                        var cents = 1200 * Math.log2(getNotesDict(TUNING_FREQ)[closestNote] / f0)
+                        if (cents > 0) {
+                            $("#Cents").text("+" + Math.round(cents));
+                        } else {
+                            $("#Cents").text(Math.round(cents));
+                        }
+
+                        var _plotArray = [];
+                        for (let i = 0; i < freqAmpArray.length; i++) {
+                            _plotArray.push([freqValues[i], freqAmpArray[i]])
+                        }
+                        fftChartOptions.series[0].data = _plotArray;
+                        fftChart.setOption(fftChartOptions);
+
+                        // calculate THD+N
+                        var f0Pow = 0;
+                        var nonf0Pow = 0;
+                        for (let i = 1; i < freqAmpArray.length; i++) {
+                            if (Math.abs(i - if0) <= FFT_INDEX_LOOKUP) {
+                                f0Pow = Math.pow(10, freqAmpArray[i] / 20) + f0Pow;
+                            }
+                            else {
+                                nonf0Pow = Math.pow(10, freqAmpArray[i] / 20) + nonf0Pow;
+                            }
+                        }
+                        var thdn = nonf0Pow / f0Pow;
+                        thdnGaugeOptions.series[0].data[0].value = thdn;
+                        thdnGauge.setOption(thdnGaugeOptions);
+
+                        // calculate harmonic & non-harmonic power
+                        var harmonicIndices = [];
+
+                        // calculate total power
+                        var totalPow = 0;
+                        for (let i = 1; i < freqAmpArray.length; i++) {
+                            totalPow = Math.pow(10, freqAmpArray[i] / 20) / freqValues[i] + totalPow;
+                        }
+
+                        // calculate THD
+                        // fN power
+                        var harmonicsPowerArray = []
+                        for (let n = 1; n <= N_HARMONICS; n++) {
+                            var harmPow = 0;
+                            for (let i = -FFT_INDEX_LOOKUP; i <= FFT_INDEX_LOOKUP; i++) {
+                                harmPow = Math.pow(10, freqAmpArray[if0 * n + i] / 20) / freqValues[if0 * n + i] + harmPow;
+                                harmonicIndices.push(if0 * n + i);
+                            }
+                            harmonicsPowerArray.push(harmPow / totalPow);
+                        }
+                        var _harmonicsPow = harmonicsPowerArray.slice(1).reduce((partialSum, a) => partialSum + a, 0);
+                        var thd = _harmonicsPow / harmonicsPowerArray[0];
+                        thdGaugeOptions.series[0].data[0].value = thd;
+                        thdGauge.setOption(thdGaugeOptions);
+
+                        // back to non harmonic
+                        var nonHarmPow = 0;
+                        var fnPow = 0;
+                        for (let i = 1; i < freqAmpArray.length; i++) {
+                            if (!(harmonicIndices.includes(i))) {
+                                nonHarmPow = Math.pow(10, freqAmpArray[i] / 20) / freqValues[i] + nonHarmPow;
+                            } else {
+                                fnPow = Math.pow(10, freqAmpArray[i] / 20) / freqValues[i] + fnPow;
+                            }
+                        }
+
+                        // adding non harm power at the and for plotting
+                        harmonicsPowerArray.push(nonHarmPow / totalPow);
+
+                        // powercheck
+                        var totalPow = 0
+                        for (let i = 0; i < harmonicsPowerArray.length; i++) {
+                            totalPow = totalPow + harmonicsPowerArray[i];
+                        }
+                        totalPow = totalPow + nonHarmPow;
+                        // console.log(totalPow);  // ~= 1.001 -> OK
+
+                        $("#harmnonicsratio").text("Harm/non-harm ratio= " + Math.round(fnPow / nonHarmPow));
+
+                        harmonicsChartOptions.series[0].data = harmonicsPowerArray;
+                        harmonicsChart.setOption(harmonicsChartOptions);
+
+                        // BAD Sound : 
+                        // THD+N : 0.4<->0.7%
+                        // Harm/!Harm : 10<->13
+
+                        // GOOD Sound : 
+                        // THD+N : 1.5%<->4%
+                        // Harm/!Harm : 3<->6
+
+                        // var thdbarvalue = harmPow / (f0Pow + harmPow) * 100;
+                        // $("#thdbar").progressbar("value", thdbarvalue);
+                        // console.log(thdbarvalue);
+
+                        // console.log(freqArray);
+                        // console.log(fftValues);
+                        // console.log(freqAmpArray);
+                    }, TIMECONSTANT)
+
+
+                })
+                .catch(function (err) {
+                    console.error("The following gUM error occured: " + err);
+                    audioCtx.close();
+                }, TIMECONSTANT);
+        }
+
+    </script>
+</body>
